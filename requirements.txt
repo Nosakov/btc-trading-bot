@@ -1,0 +1,11 @@
+python-binance
+pandas
+numpy
+vectorbt
+mplfinance
+python-dotenv
+requests
+python-telegram-bot
+binance-connector
+binance
+cryptography
