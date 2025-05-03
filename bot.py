@@ -5,6 +5,9 @@ import pandas as pd
 from dotenv import load_dotenv
 from binance.client import Client as BinanceClient
 from binance.exceptions import BinanceAPIException
+from websocket_handler import BinanceWebSocketManager
+from strategy import execute_strategy, execute_grid_strategy
+from notifier import create_notifier
 
 # === Настройки проекта ===
 load_dotenv()
@@ -13,17 +16,12 @@ INTERVAL = "1m"
 TRADE_QUANTITY = 0.002  # Количество BTC для торговли
 
 # === Инициализация API клиента ===
-BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
-BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
+BINANCE_API_KEY = os.getenv("BINANCE_FUTURES_API_KEY")
+BINANCE_SECRET_KEY = os.getenv("BINANCE_FUTURES_SECRET_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-client = BinanceClient(BINANCE_API_KEY, BINANCE_SECRET_KEY, testnet=True)
-
-# Импорты после инициализации
-from websocket_handler import BinanceWebSocketManager
-from strategy import execute_strategy, execute_grid_strategy
-from notifier import create_notifier
+client = BinanceClient(BINANCE_API_KEY, BINANCE_SECRET_KEY, testnet=True, requests_params={"timeout": 20})
 
 send_telegram_message = create_notifier(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
 
@@ -49,8 +47,7 @@ def load_historical_data(symbol="BTCUSDT", interval="1m", hours=24):
     end_ts = int(end_time.timestamp() * 1000)
 
     try:
-        klines = client.get_klines(symbol=symbol, interval=interval, startTime=start_ts,
-                                   endTime=end_ts)
+        klines = client.get_klines(symbol=symbol, interval=interval, startTime=start_ts, endTime=end_ts)
 
         if not klines:
             print("❌ Нет исторических данных за этот период.")
@@ -89,7 +86,7 @@ def place_order(symbol, side, quantity):
             stop_loss = price * (1 - STOP_LOSS_PERCENT)
 
             # Выставляем OCO
-            client.create_oco_order(
+            oco_order = client.create_oco_order(
                 symbol=symbol,
                 side='SELL',
                 quantity=quantity,
@@ -100,7 +97,7 @@ def place_order(symbol, side, quantity):
             )
 
             print(f"📈 Куплено {quantity} {symbol} по {price:.2f}")
-            message = f"✅ [BUY] Куплено {quantity} {symbol}\nЦена: {price:.2f}$\nTP: {take_profit:.2f}\nSL: {stop_loss:.2f}"
+            message = f"✅ [BUY] Куплено {quantity} {symbol}\nЦена: {price:.2f}$\nTP: {take_profit:.2f}$\nSL: {stop_loss:.2f}$"
             send_telegram_message(message)
 
             active_position = 'long'
@@ -110,8 +107,7 @@ def place_order(symbol, side, quantity):
         elif side == 'sell' and active_position == 'long' and not oco_set:
             # Простая продажа без OCO
             order = client.order_market_sell(symbol=symbol, quantity=quantity)
-            price = float(order['fills'][0]['price'])
-            message = f"✅ [SELL] Продано {quantity} {symbol}\nЦена: {price:.2f}"
+            message = f"✅ [SELL] Продано {quantity} {symbol}\nЦена: {float(order['fills'][0]['price']):.2f}$"
             send_telegram_message(message)
 
             active_position = None
@@ -119,13 +115,14 @@ def place_order(symbol, side, quantity):
             oco_set = False
 
         elif side == 'sell' and active_position is None:
-            # Продажа шортовой позиции
+            # Открытие шортовой позиции
             order = client.order_market_sell(symbol=symbol, quantity=quantity)
             price = float(order['fills'][0]['price'])
             take_profit = price * (1 - TAKE_PROFIT_PERCENT)
             stop_loss = price * (1 + STOP_LOSS_PERCENT)
 
-            client.create_oco_order(
+            # Выставляем OCO
+            oco_order = client.create_oco_order(
                 symbol=symbol,
                 side='BUY',
                 quantity=quantity,
@@ -136,7 +133,7 @@ def place_order(symbol, side, quantity):
             )
 
             print(f"📉 Открытая шорт-позиция: {quantity} {symbol} по {price:.2f}")
-            message = f"✅ [SHORT] Продано {quantity} {symbol}\nЦена: {price:.2f}$\nTP: {take_profit:.2f}\nSL: {stop_loss:.2f}"
+            message = f"✅ [SHORT] Продано {quantity} {symbol}\nЦена: {price:.2f}$\nTP: {take_profit:.2f}$\nSL: {stop_loss:.2f}$"
             send_telegram_message(message)
 
             active_position = 'short'
@@ -144,11 +141,9 @@ def place_order(symbol, side, quantity):
             oco_set = True
 
         elif side == 'buy' and active_position == 'short' and not oco_set:
-            # Покупка для закрытия шорт-позиции
+            # Закрытие шортовой позиции
             order = client.order_market_buy(symbol=symbol, quantity=quantity)
-            price = float(order['fills'][0]['price'])
-
-            message = f"✅ [COVER] Куплено {quantity} {symbol} для закрытия шорта\nЦена: {price:.2f}"
+            message = f"✅ [COVER] Куплено {quantity} {symbol} для закрытия шорта\nЦена: {float(order['fills'][0]['price']):.2f}$"
             send_telegram_message(message)
 
             active_position = None
@@ -156,7 +151,7 @@ def place_order(symbol, side, quantity):
             oco_set = False
 
         else:
-            print("❌ Неизвестная сторона ордера или неверное состояние")
+            print("❌ Неизвестная сторона ордера или состояние позиции")
             return None
 
         return order
@@ -176,8 +171,7 @@ def monitor_active_orders(symbol="BTCUSDT"):
         if open_orders:
             print(f"📊 Найдено {len(open_orders)} активных ордеров")
             for order in open_orders:
-                print(
-                    f"🧾 Ордер ID: {order['orderId']} | Тип: {order['side']} | Цена: {order['price']}")
+                print(f"🧾 Ордер ID: {order['orderId']} | Тип: {order['side']} | Цена: {order['price']}")
             oco_set = True
         else:
             print("✅ Нет активных ордеров")
@@ -200,6 +194,9 @@ def process_message(msg):
                 print("❌ Ошибка парсинга JSON:", ve)
                 return
 
+        # Логируем всё пришедшее
+        #print("📩 Полное сообщение:", msg)
+
         # Сервисные сообщения
         if 'result' in msg and msg['result'] is None:
             print("📡 Сервисное сообщение (subscribed)")
@@ -220,7 +217,7 @@ def process_message(msg):
         volume = float(kline.get('v'))
         is_closed = kline.get('x')
 
-        print(f"蜡 Свеча: {symbol} | Закрыта: {is_closed} | Цена: {close_price:.2f}")
+        print(f"🕯️ Свеча: {symbol} | Закрыта: {is_closed} | Цена: {close_price:.2f}")
 
         # Только если свеча закрыта
         if not is_closed:
@@ -232,7 +229,7 @@ def process_message(msg):
             print("🔁 Эта свеча уже есть — пропускаем")
             return
 
-        # Добавляем новую свечу
+        # Добавляем в DataFrame
         df_new = pd.DataFrame([{
             'Open': open_price,
             'High': high,
@@ -248,7 +245,14 @@ def process_message(msg):
 
         print(f"📊 Текущее количество свечей: {len(df_stream)}")
 
-        # Управление позицией (резерв)
+        # Вызываем стратегии
+        if len(df_stream) >= 26:
+            execute_strategy(df_stream, send_telegram_message, place_order, SYMBOL)
+
+        if len(df_stream) >= 50:
+            execute_grid_strategy(df_stream, send_telegram_message, place_order, SYMBOL)
+
+        # Резервное управление позицией
         latest_price = df_stream.iloc[-1]['Close']
 
         if active_position == 'long':
@@ -269,19 +273,12 @@ def process_message(msg):
                 print("🎯 [Резерв] TAKE PROFIT достигнут (SHORT)")
                 place_order(SYMBOL, 'buy', TRADE_QUANTITY)
 
-        # Мониторинг активных ордеров
+        # Периодическая проверка ордеров
         if len(df_stream) % 5 == 0:
             monitor_active_orders(SYMBOL)
 
-        # Вызываем стратегии
-        if len(df_stream) >= 26:
-            execute_strategy(df_stream, send_telegram_message, place_order, SYMBOL)
-
-        if len(df_stream) >= 50:
-            execute_grid_strategy(df_stream, send_telegram_message, place_order, SYMBOL)
-
     except Exception as e:
-        print("❌ Ошибка обработки сообщения:", e)
+        print(f"❌ Ошибка обработки сообщения: {e}")
 
 def cancel_all_orders(symbol="BTCUSDT"):
     try:

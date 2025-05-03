@@ -1,4 +1,3 @@
-python-binance
 pandas
 numpy
 vectorbt
@@ -6,6 +5,7 @@ mplfinance
 python-dotenv
 requests
 python-telegram-bot
-binance-connector
-binance
+python-binance
 cryptography
+nest_asyncio
+websocket-client

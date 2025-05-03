@@ -1,5 +1,6 @@
-from binance.websocket.spot.websocket_stream import SpotWebsocketStreamClient
+import json
 import logging
+import websocket
 
 logger = logging.getLogger(__name__)
 
@@ -8,37 +9,52 @@ class BinanceWebSocketManager:
         self.symbol = symbol.lower()
         self.interval = interval
         self.callback = callback
-        self.ws_client = None
+        self.ws = None
 
     def start(self):
         logger.info(f"🚀 Запуск WebSocket: {self.symbol.upper()} | {self.interval}")
-        self.ws_client = SpotWebsocketStreamClient(
+        stream = f"{self.symbol}@kline_{self.interval}"
+
+        # Проверка URL потока
+        url = f"wss://stream.binancefuture.com/ws/{stream}"
+        print(f"🔗 Подписываемся на поток: {url}")
+
+        # Запуск WebSocket
+        self.ws = websocket.WebSocketApp(
+            url,
             on_message=self._on_message,
-            on_error=lambda ws, error: self._on_error(error),
-            on_close=lambda ws, code, reason: self._on_close(code, reason),
-            on_open=lambda ws: self._on_open(),
+            on_error=self._on_error,
+            on_close=self._on_close,
+            on_open=self._on_open
         )
 
-        # Подписываемся на поток свечей
-        self.ws_client.subscribe(stream=f"{self.symbol}@kline_{self.interval}")
+        # Можно добавить опции reconnect
+        self.ws.run_forever()
 
-    def _on_open(self):
+    def _on_open(self, ws):
         logger.info("🔌 Соединение открыто")
 
-    def _on_message(self, ws, msg):
-        logger.debug("📩 Получено сырое сообщение: %s", msg)
+    def _on_message(self, ws, message):
         try:
+            msg = json.loads(message)
+            logger.debug("📩 Получено сообщение: %s", msg)
+
+            # Передаем сообщение в обработчик стратегии
             self.callback(msg)
+
+        except json.JSONDecodeError as ve:
+            logger.error("❌ Ошибка парсинга JSON: %s", ve)
         except Exception as e:
             logger.error("❌ Ошибка в обработчике сообщения: %s", e)
 
-    def _on_error(self, error):
+    def _on_error(self, ws, error):
         logger.error("❌ Ошибка WebSocket: %s", error)
 
-    def _on_close(self, code=None, reason=None):
-        logger.info(f"🔌 Соединение закрыто. Код: {code}, Причина: {reason}")
+    def _on_close(self, ws, close_status_code, close_msg):
+        logger.info("🔌 Соединение закрыто")
+        logger.info(f"📝 Код: {close_status_code}, Сообщение: {close_msg}")
 
     def stop(self):
-        if self.ws_client:
-            self.ws_client.stop()
+        if self.ws:
+            self.ws.close()
             logger.info("🛑 WebSocket остановлен")
