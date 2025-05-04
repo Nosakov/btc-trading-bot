@@ -5,12 +5,10 @@ import pandas as pd
 from dotenv import load_dotenv
 from binance.client import Client as BinanceClient
 from binance.exceptions import BinanceAPIException
-from telegram.ext import Updater, CommandHandler
+from telegram.ext import Updater, CommandHandler, CallbackContext
 from telegram import Update
-from telegram.ext import CallbackContext
 from io import BytesIO
 import mplfinance as mpf
-import threading
 
 # === Настройки проекта ===
 load_dotenv()
@@ -401,17 +399,17 @@ def generate_grid_chart(df, grid_levels=None):
     df = df.tail(50).copy()
     buffer = BytesIO()
 
-    alines = []
+    apdict = []
     if grid_levels:
         for level in grid_levels:
-            alines.append(dict(y1=level, color='gray', linestyle='--'))
+            apdict.append(dict(y1=level, color='gray', linestyle='--'))
 
     mpf.plot(
         df,
         type='candle',
         style='yahoo',
         title=f"{SYMBOL} - Последние 50 свечей",
-        alines=dict(alines=alines),
+        alines=dict(alines=apdict),
         volume=False,
         savefig=dict(fname=buffer, dpi=100, bbox_inches='tight'),
         figratio=(10, 6),
@@ -474,7 +472,9 @@ if __name__ == "__main__":
         print(f"📊 Исторические данные добавлены | Текущее количество свечей: {len(df_stream)}")
 
     # Запуск Telegram бота в отдельном потоке
-    telegram_thread = threading.Thread(target=run_telegram_bot)
+    from threading import Thread
+
+    telegram_thread = Thread(target=run_telegram_bot)
     telegram_thread.start()
 
     # Запуск WebSocket
