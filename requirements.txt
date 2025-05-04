@@ -3,7 +3,7 @@ cryptography
 nest_asyncio
 python-binance
 mplfinance
-websocket-client
+websockets
 pandas
 numpy
 python-dotenv

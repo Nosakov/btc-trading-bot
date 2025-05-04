@@ -1,7 +1,7 @@
-import asyncio
 import os
-import time
 import json
+import time
+import asyncio
 import pandas as pd
 from dotenv import load_dotenv
 from binance.client import Client as BinanceClient
@@ -10,7 +10,6 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from io import BytesIO
 import mplfinance as mpf
-import threading
 
 # === Настройки проекта ===
 load_dotenv()
@@ -34,7 +33,22 @@ client = BinanceClient(
 # Импорты после инициализации
 from websocket_handler import BinanceFuturesWebSocketManager
 from strategy import execute_strategy, execute_grid_strategy
-from notifier import create_notifier
+
+
+def create_notifier(bot_token, chat_id):
+    from telegram import Bot
+    import asyncio
+
+    bot = Bot(token=bot_token)
+
+    async def send_message(msg):
+        try:
+            await bot.send_message(chat_id=chat_id, text=msg)
+        except Exception as e:
+            print(f"[Telegram] Ошибка отправки сообщения: {e}")
+
+    return lambda msg: asyncio.run(send_message(msg))
+
 
 send_telegram_message = create_notifier(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
 
@@ -47,7 +61,6 @@ entry_price = 0.0
 oco_set = False
 position_closed_recently = False
 last_position_close_time = 0
-
 STOP_LOSS_PERCENT = 0.003  # 0.3%
 TAKE_PROFIT_PERCENT = 0.005  # 0.5%
 
@@ -62,9 +75,7 @@ def load_historical_data(symbol="BTCUSDT", interval="1m", hours=24):
     end_ts = int(end_time.timestamp() * 1000)
 
     try:
-        klines = client.get_klines(symbol=symbol, interval=interval, startTime=start_ts,
-                                   endTime=end_ts)
-
+        klines = client.get_klines(symbol=symbol, interval=interval, startTime=start_ts, endTime=end_ts)
         if not klines:
             print("❌ Нет исторических данных за этот период.")
             return pd.DataFrame(columns=['Open', 'High', 'Low', 'Close', 'Volume'])
@@ -93,10 +104,8 @@ def load_historical_data(symbol="BTCUSDT", interval="1m", hours=24):
 # === Функция размещения ордера с TP и SL ===
 def place_order(symbol, side, quantity):
     global active_position, entry_price, oco_set, position_closed_recently, last_position_close_time
-
     try:
         latest_price = df_stream.iloc[-1]['Close']
-
         if position_closed_recently and time.time() - last_position_close_time < 60:
             print("⏳ Ждём перед новой сделкой...")
             return None
@@ -108,10 +117,8 @@ def place_order(symbol, side, quantity):
                 type='MARKET',
                 quantity=quantity
             )
-
             take_profit = round(latest_price * (1 + TAKE_PROFIT_PERCENT), 2)
             stop_loss = round(latest_price * (1 - STOP_LOSS_PERCENT), 2)
-
             if take_profit <= 0 or stop_loss <= 0:
                 print("⚠️ Неверные значения TP/SL — меньше или равно нулю")
                 send_telegram_message("⚠️ [ОРДЕР] TP/SL не могут быть ≤ 0")
@@ -125,7 +132,6 @@ def place_order(symbol, side, quantity):
                 stopPrice=round(take_profit, 2),
                 closePosition=True
             )
-
             # Stop Loss
             client.futures_create_order(
                 symbol=symbol,
@@ -134,15 +140,12 @@ def place_order(symbol, side, quantity):
                 stopPrice=round(stop_loss, 2),
                 closePosition=True
             )
-
             message = f"📈 [BUY] Куплено {quantity} {symbol}\nЦена: {latest_price:.2f}$\nTP: {take_profit:.2f}$\nSL: {stop_loss:.2f}$"
             send_telegram_message(message)
-
             active_position = 'long'
             entry_price = latest_price
             oco_set = True
             position_closed_recently = False
-
         elif side == 'sell' and active_position is None:
             # Продажа шортовой позиции
             order = client.futures_create_order(
@@ -151,10 +154,8 @@ def place_order(symbol, side, quantity):
                 type='MARKET',
                 quantity=quantity
             )
-
             take_profit = round(latest_price * (1 - TAKE_PROFIT_PERCENT), 2)
             stop_loss = round(latest_price * (1 + STOP_LOSS_PERCENT), 2)
-
             if take_profit <= 0 or stop_loss <= 0:
                 print("⚠️ Неверные значения TP/SL — меньше или равно нулю")
                 send_telegram_message("⚠️ [ОРДЕР] TP/SL не могут быть ≤ 0")
@@ -168,7 +169,6 @@ def place_order(symbol, side, quantity):
                 stopPrice=round(take_profit, 2),
                 closePosition=True
             )
-
             # Stop Loss
             client.futures_create_order(
                 symbol=symbol,
@@ -177,15 +177,12 @@ def place_order(symbol, side, quantity):
                 stopPrice=round(stop_loss, 2),
                 closePosition=True
             )
-
             message = f"📉 [SHORT] Продано {quantity} {symbol}\nЦена: {latest_price:.2f}$\nTP: {take_profit:.2f}$\nSL: {stop_loss:.2f}$"
             send_telegram_message(message)
-
             active_position = 'short'
             entry_price = latest_price
             oco_set = True
             position_closed_recently = False
-
         elif side == 'sell' and active_position == 'long':
             # Простая продажа без OCO
             order = client.futures_create_order(
@@ -194,16 +191,13 @@ def place_order(symbol, side, quantity):
                 type='MARKET',
                 quantity=quantity
             )
-
             message = f"📉 Продано {quantity} {symbol} по {latest_price:.2f}"
             send_telegram_message(message)
-
             active_position = None
             entry_price = 0.0
             oco_set = False
             position_closed_recently = True
             last_position_close_time = time.time()
-
         elif side == 'buy' and active_position == 'short':
             # Закрытие шортовой позиции
             order = client.futures_create_order(
@@ -212,16 +206,13 @@ def place_order(symbol, side, quantity):
                 type='MARKET',
                 quantity=quantity
             )
-
             message = f"📈 [COVER] Куплено {quantity} {symbol} для закрытия шорта\nЦена: {latest_price:.2f}"
             send_telegram_message(message)
-
             active_position = None
             entry_price = 0.0
             oco_set = False
             position_closed_recently = True
             last_position_close_time = time.time()
-
         else:
             print("❌ Неизвестная сторона ордера или состояние")
             return None
@@ -235,30 +226,9 @@ def place_order(symbol, side, quantity):
     return None
 
 
-# === Мониторинг активных ордеров ===
-def monitor_active_orders(symbol="BTCUSDT"):
-    global oco_set
-    try:
-        open_orders = client.futures_get_all_orders(symbol=symbol, limit=50)
-        open_orders = [o for o in open_orders if o['status'] == 'NEW']
-
-        if open_orders:
-            print(f"📊 Найдено {len(open_orders)} активных ордеров")
-            for order in open_orders:
-                print(f"🧾 ID: {order['orderId']} | Цена: {order['price']}")
-            oco_set = True
-        else:
-            print("✅ Нет активных ордеров")
-            oco_set = False
-    except BinanceAPIException as e:
-        print(f"❌ Ошибка проверки ордеров:{e}")
-        oco_set = False
-
-
 # === Обработка сообщений из WebSocket ===
-def process_message(msg):
+async def process_message(msg):
     global df_stream, active_position, entry_price, oco_set
-
     try:
         if isinstance(msg, str):
             try:
@@ -306,52 +276,43 @@ def process_message(msg):
             'Close': close_price,
             'Volume': volume
         }], index=[candle_time])
-
-        df_combined = pd.concat([df_stream, df_new])
+        df_combined = pd.concat([df_stream, df_new]).drop_duplicates()
         df_combined.sort_index(inplace=True)
-        df_combined = df_combined[~df_combined.index.duplicated()]
-
-        # Удаляем старые свечи, если их больше 1000
+        df_combined = df_combined.tail(1000)
         df_stream = df_combined.copy()
-        if len(df_stream) > 1000:
-            df_stream = df_stream.iloc[200:]  # Оставляем последние 800 свечей
 
         print(f"📊 Текущее количество свечей: {len(df_stream)}")
 
-        # Управление позицией (резерв)
-        latest_price = df_stream.iloc[-1]['Close']
-
-        if active_position == 'long':
-            current_return = (latest_price - entry_price) / entry_price
-            if current_return <= -(STOP_LOSS_PERCENT + 0.001):
-                print("🛑 [Резерв] STOP LOSS достигнут (LONG)")
-                place_order(SYMBOL, 'sell', TRADE_QUANTITY)
-            elif current_return >= TAKE_PROFIT_PERCENT + 0.005:
-                print("🎯 [Резерв] TAKE PROFIT достигнут (LONG)")
-                place_order(SYMBOL, 'sell', TRADE_QUANTITY)
-
-        elif active_position == 'short':
-            current_return = (entry_price - latest_price) / entry_price
-            if current_return <= -(STOP_LOSS_PERCENT + 0.001):
-                print("🛑 [Резерв] STOP LOSS достигнут (SHORT)")
-                place_order(SYMBOL, 'buy', TRADE_QUANTITY)
-            elif current_return >= TAKE_PROFIT_PERCENT + 0.005:
-                print("🎯 [Резерв] TAKE PROFIT достигнут (SHORT)")
-                place_order(SYMBOL, 'buy', TRADE_QUANTITY)
-
         # Вызываем стратегии
         if len(df_stream) >= 26:
-            execute_strategy(df_stream, send_telegram_message, place_order, SYMBOL)
-
+            await execute_strategy(df_stream, send_telegram_message, place_order, SYMBOL)
         if len(df_stream) >= 50:
-            execute_grid_strategy(df_stream, send_telegram_message, place_order, SYMBOL)
+            await execute_grid_strategy(df_stream, send_telegram_message, place_order, SYMBOL)
 
         # Периодическая проверка ордеров
         if len(df_stream) % 5 == 0:
             monitor_active_orders(SYMBOL)
-
     except Exception as e:
         print(f"❌ Ошибка обработки сообщения: {e}")
+
+
+# === Мониторинг активных ордеров ===
+def monitor_active_orders(symbol="BTCUSDT"):
+    global oco_set
+    try:
+        open_orders = client.futures_get_all_orders(symbol=symbol, limit=50)
+        open_orders = [o for o in open_orders if o['status'] == 'NEW']
+        if open_orders:
+            print(f"📊 Найдено {len(open_orders)} активных ордеров")
+            for order in open_orders:
+                print(f"🧾 ID: {order['orderId']} | Цена: {order['price']}")
+            oco_set = True
+        else:
+            print("✅ Нет активных ордеров")
+            oco_set = False
+    except BinanceAPIException as e:
+        print(f"❌ Ошибка проверки ордеров: {e}")
+        oco_set = False
 
 
 # === Команды Telegram ===
@@ -366,6 +327,7 @@ async def get_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except BinanceAPIException as e:
         await update.message.reply_text(f"❌ Ошибка получения позиций: {e}")
 
+
 async def get_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         orders = client.futures_get_all_orders(symbol=SYMBOL, limit=50)
@@ -379,6 +341,7 @@ async def get_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except BinanceAPIException as e:
         await update.message.reply_text(f"❌ Ошибка получения ордеров: {e}")
 
+
 async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         balance = client.futures_account_balance()
@@ -387,6 +350,7 @@ async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"💼 Баланс USDT: {item['balance']} USDT")
     except BinanceAPIException as e:
         await update.message.reply_text(f"❌ Ошибка получения баланса: {e}")
+
 
 def generate_grid_chart(df, grid_levels=None):
     """
@@ -397,12 +361,10 @@ def generate_grid_chart(df, grid_levels=None):
 
     df = df.tail(50).copy()
     buffer = BytesIO()
-
     apdict = []
     if grid_levels:
         for level in grid_levels:
             apdict.append(dict(y1=level, color='gray', linestyle='--'))
-
     mpf.plot(
         df,
         type='candle',
@@ -414,31 +376,35 @@ def generate_grid_chart(df, grid_levels=None):
         figratio=(10, 6),
         figscale=1.5
     )
-
     buffer.seek(0)
     return buffer
+
 
 async def send_grid_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     grid_levels = execute_grid_strategy(df_stream, None, None, SYMBOL, dry_run=True)
     chart_buffer = generate_grid_chart(df_stream, grid_levels)
-
     if chart_buffer:
         await context.bot.send_photo(chat_id=update.effective_chat.id, photo=chart_buffer)
     else:
         await update.message.reply_text("❌ Не удалось сгенерировать график")
 
-# === Запуск Telegram бота в отдельном потоке ===
-def run_telegram_bot():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
 
+# === Асинхронный запуск WebSocket ===
+async def run_websocket():
+    ws_manager = BinanceFuturesWebSocketManager(SYMBOL, INTERVAL, process_message)
+    await ws_manager.start()
+
+
+# === Асинхронный запуск Telegram бота ===
+async def run_telegram_bot():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("positions", get_positions))
     app.add_handler(CommandHandler("orders", get_orders))
     app.add_handler(CommandHandler("gridchart", send_grid_chart))
     app.add_handler(CommandHandler("balance", check_balance))
     print("📡 Telegram бот запущен")
-    loop.run_until_complete(app.run_polling())
+    await app.run_polling()
+
 
 # === Запуск бота ===
 if __name__ == "__main__":
@@ -466,16 +432,12 @@ if __name__ == "__main__":
         df_stream.sort_index(inplace=True)
         print(f"📊 Исторические данные добавлены | Текущее количество свечей: {len(df_stream)}")
 
-    # Запуск Telegram бота в отдельном потоке
-    telegram_thread = threading.Thread(target=run_telegram_bot)
-    telegram_thread.start()
+    # Создаем задачи
+    bot_task = asyncio.create_task(run_telegram_bot())
+    ws_task = asyncio.create_task(run_websocket())
 
-    # Запуск WebSocket
-    ws_manager = BinanceFuturesWebSocketManager(SYMBOL, INTERVAL, process_message)
-    ws_manager.start()
-
+    # Запускаем обе задачи параллельно
     try:
-        while True:
-            time.sleep(1)
+        asyncio.run(asyncio.gather(bot_task, ws_task))
     except KeyboardInterrupt:
-        ws_manager.stop()
+        print("🛑 Бот остановлен вручную")

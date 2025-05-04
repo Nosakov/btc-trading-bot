@@ -1,6 +1,7 @@
+import asyncio
 import json
 import logging
-import websocket
+import websockets
 
 logger = logging.getLogger(__name__)
 
@@ -9,43 +10,44 @@ class BinanceFuturesWebSocketManager:
         self.symbol = symbol.lower()
         self.interval = interval
         self.callback = callback
-        self.ws = None
+        self.connected = False
+        self.websocket = None
 
-    def start(self):
-        logger.info(f"🚀 Запуск WebSocket: {self.symbol.upper()} | {self.interval}")
+    async def start(self):
         stream = f"{self.symbol}@kline_{self.interval}"
         url = f"wss://stream.binancefuture.com/ws/{stream}"
+        logger.info(f"🚀 Подключение к WebSocket: {url}")
 
-        self.ws = websocket.WebSocketApp(
-            url,
-            on_message=self._on_message,
-            on_error=self._on_error,
-            on_close=self._on_close,
-            on_open=self._on_open
-        )
-        self.ws.run_forever()
+        while True:
+            try:
+                async with websockets.connect(url) as ws:
+                    self.websocket = ws
+                    self.connected = True
+                    logger.info("🔌 Соединение установлено")
+                    await self._listen(ws)
+            except Exception as e:
+                logger.error(f"❌ Ошибка WebSocket: {e}")
+                self.connected = False
+                logger.info("🔄 Переподключение через 5 секунд...")
+                await asyncio.sleep(5)
 
-    def _on_open(self, ws):
-        logger.info("🔌 Соединение открыто")
-
-    def _on_message(self, ws, message):
-        logger.debug("📩 Получено сырое сообщение: %s", message)
+    async def _listen(self, ws):
         try:
-            msg = json.loads(message)
-            self.callback(msg)
-        except json.JSONDecodeError as ve:
-            logger.error("❌ Ошибка парсинга JSON: %s", ve)
-        except Exception as e:
-            logger.error("❌ Ошибка в обработчике: %s", e)
+            while True:
+                message = await ws.recv()
+                logger.debug("📩 Получено сырое сообщение: %s", message[:200] + "..." if len(message) > 200 else message)
+                try:
+                    msg = json.loads(message)
+                    await self.callback(msg)
+                except json.JSONDecodeError as ve:
+                    logger.error("❌ Ошибка парсинга JSON: %s", ve)
+                except Exception as e:
+                    logger.error("❌ Ошибка в обработчике: %s", e)
+        except websockets.exceptions.ConnectionClosed as e:
+            logger.warning("⚠️ Соединение закрыто: %s", e)
 
-    def _on_error(self, ws, error):
-        logger.error("❌ Ошибка WebSocket: %s", error)
-
-    def _on_close(self, ws, code, reason):
-        logger.info("🛑 Соединение закрыто")
-        logger.info(f"📝 Код: {code}, Причина: {reason}")
-
-    def stop(self):
-        if self.ws:
-            self.ws.close()
+    async def stop(self):
+        if self.websocket:
+            await self.websocket.close()
+            self.connected = False
             logger.info("🛑 WebSocket остановлен")
