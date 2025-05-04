@@ -39,6 +39,8 @@ df_stream = pd.DataFrame(columns=['Open', 'High', 'Low', 'Close', 'Volume'])
 active_position = None  # 'long' / 'short' / None
 entry_price = 0.0
 oco_set = False
+position_closed_recently = False
+last_position_close_time = 0
 
 STOP_LOSS_PERCENT = 0.003  # 0.3%
 TAKE_PROFIT_PERCENT = 0.05  # 0.5%
@@ -54,7 +56,8 @@ def load_historical_data(symbol="BTCUSDT", interval="1m", hours=24):
     end_ts = int(end_time.timestamp() * 1000)
 
     try:
-        klines = client.get_klines(symbol=symbol, interval=interval, startTime=start_ts, endTime=end_ts)
+        klines = client.get_klines(symbol=symbol, interval=interval, startTime=start_ts,
+                                   endTime=end_ts)
 
         if not klines:
             print("❌ Нет исторических данных за этот период.")
@@ -83,10 +86,15 @@ def load_historical_data(symbol="BTCUSDT", interval="1m", hours=24):
 
 # === Функция размещения ордера с TP и SL ===
 def place_order(symbol, side, quantity):
-    global active_position, entry_price, oco_set
+    global active_position, entry_price, oco_set, position_closed_recently, last_position_close_time
 
     try:
         latest_price = df_stream.iloc[-1]['Close']
+
+        if position_closed_recently and time.time() - last_position_close_time < 60:
+            print("⏳ Ждём перед новой сделкой...")
+            return None
+
         if side == 'buy':
             order = client.futures_create_order(
                 symbol=symbol,
@@ -94,6 +102,7 @@ def place_order(symbol, side, quantity):
                 type='MARKET',
                 quantity=quantity
             )
+
             take_profit = round(latest_price * (1 + TAKE_PROFIT_PERCENT), 2)
             stop_loss = round(latest_price * (1 - STOP_LOSS_PERCENT), 2)
 
@@ -126,6 +135,7 @@ def place_order(symbol, side, quantity):
             active_position = 'long'
             entry_price = latest_price
             oco_set = True
+            position_closed_recently = False
 
         elif side == 'sell' and active_position is None:
             # Продажа шортовой позиции
@@ -138,6 +148,11 @@ def place_order(symbol, side, quantity):
 
             take_profit = round(latest_price * (1 - TAKE_PROFIT_PERCENT), 2)
             stop_loss = round(latest_price * (1 + STOP_LOSS_PERCENT), 2)
+
+            if take_profit <= 0 or stop_loss <= 0:
+                print("⚠️ Неверные значения TP/SL — меньше или равно нулю")
+                send_telegram_message("⚠️ [ОРДЕР] TP/SL не могут быть ≤ 0")
+                return None
 
             # Take Profit
             client.futures_create_order(
@@ -163,9 +178,10 @@ def place_order(symbol, side, quantity):
             active_position = 'short'
             entry_price = latest_price
             oco_set = True
+            position_closed_recently = False
 
         elif side == 'sell' and active_position == 'long':
-            # Простая продажа без OCO
+            # Закрытие лонговой позиции
             order = client.futures_create_order(
                 symbol=symbol,
                 side='SELL',
@@ -179,8 +195,11 @@ def place_order(symbol, side, quantity):
             active_position = None
             entry_price = 0.0
             oco_set = False
+            position_closed_recently = True
+            last_position_close_time = time.time()
 
         elif side == 'buy' and active_position == 'short':
+            # Закрытие шортовой позиции
             order = client.futures_create_order(
                 symbol=symbol,
                 side='BUY',
@@ -194,6 +213,8 @@ def place_order(symbol, side, quantity):
             active_position = None
             entry_price = 0.0
             oco_set = False
+            position_closed_recently = True
+            last_position_close_time = time.time()
 
         else:
             print("❌ Неизвестная сторона ордера или состояние")
@@ -213,17 +234,17 @@ def monitor_active_orders(symbol="BTCUSDT"):
     global oco_set
     try:
         open_orders = client.futures_get_all_orders(symbol=symbol, limit=50)
+        open_orders = [o for o in open_orders if o['status'] == 'NEW']
+
         if open_orders:
             print(f"📊 Найдено {len(open_orders)} активных ордеров")
-            for order in open_orders:
-                print(f"🧾 ID: {order['orderId']} | Цена: {order['price']}")
             oco_set = True
         else:
             print("✅ Нет активных ордеров")
             oco_set = False
-
     except BinanceAPIException as e:
         print(f"❌ Ошибка проверки ордеров:{e}")
+        oco_set = False
 
 
 # === Обработка сообщений из WebSocket ===
@@ -269,7 +290,7 @@ def process_message(msg):
             print("🔁 Эта свеча уже есть — пропускаем")
             return
 
-        # Добавляем новую свечу
+        # Добавляем в DataFrame
         df_new = pd.DataFrame([{
             'Open': open_price,
             'High': high,
@@ -281,7 +302,8 @@ def process_message(msg):
         df_combined = pd.concat([df_stream, df_new])
         df_combined.sort_index(inplace=True)
         df_combined = df_combined[~df_combined.index.duplicated()]
-        # Удаляем 200 самых старых свечей каждые 1000
+
+        # Удаляем старые свечи, если их больше 1000
         df_stream = df_combined.copy()
         if len(df_stream) > 1000:
             df_stream = df_stream.iloc[200:]  # Оставляем последние 800 свечей
@@ -323,23 +345,11 @@ def process_message(msg):
     except Exception as e:
         print(f"❌ Ошибка обработки сообщения: {e}")
 
-# def cancel_all_orders(symbol="BTCUSDT"):
-#     try:
-#         orders = client.get_open_orders(symbol=symbol)
-#         if orders:
-#             print(f"🚫 Отменяем {len(orders)} ордеров")
-#             for order in orders:
-#                 client.cancel_order(symbol=symbol, orderId=order['orderId'])
-#                 send_telegram_message(f"🚫 Ордер {order['orderId']} отменён")
-#         else:
-#             print("✅ Нет активных ордеров для отмены")
-#     except BinanceAPIException as e:
-#         print("❌ Ошибка отмены ордеров:", e)
-
 
 # === Запуск бота ===
 if __name__ == "__main__":
     print("🤖 Бот запущен...")
+
     # === Проверка API ключей ===
     if not BINANCE_FUTURES_API_KEY or not BINANCE_FUTURES_SECRET_KEY:
         print("❌ Не заданы API ключи")
@@ -355,19 +365,12 @@ if __name__ == "__main__":
         print("❌ Ошибка авторизации:", e)
         exit(1)
 
-    # cancel_all_orders(SYMBOL)
     # Загрузка исторических данных до запуска WebSocket
     historical_df = load_historical_data(SYMBOL, INTERVAL, hours=24)
     if not historical_df.empty:
         df_stream = pd.concat([df_stream, historical_df]).drop_duplicates()
         df_stream.sort_index(inplace=True)
         print(f"📊 Исторические данные добавлены | Текущее количество свечей: {len(df_stream)}")
-
-        # Можно сразу вызвать стратегию, если хватает данных
-        if len(df_stream) >= 26:
-            execute_strategy(df_stream, send_telegram_message, place_order, SYMBOL)
-        if len(df_stream) >= 50:
-            execute_grid_strategy(df_stream, send_telegram_message, place_order, SYMBOL)
 
     # Запуск WebSocket
     ws_manager = BinanceFuturesWebSocketManager(SYMBOL, INTERVAL, process_message)
