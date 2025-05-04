@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 import json
@@ -428,13 +429,16 @@ async def send_grid_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === Запуск Telegram бота в отдельном потоке ===
 def run_telegram_bot():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("positions", get_positions))
     app.add_handler(CommandHandler("orders", get_orders))
     app.add_handler(CommandHandler("gridchart", send_grid_chart))
     app.add_handler(CommandHandler("balance", check_balance))
     print("📡 Telegram бот запущен")
-    app.run_polling()
+    loop.run_until_complete(app.run_polling())
 
 # === Запуск бота ===
 if __name__ == "__main__":
