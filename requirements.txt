@@ -8,5 +8,4 @@ pandas
 numpy
 python-dotenv
 python-telegram-bot==20.3
-ccxt==2.2.0
-requests==2.31.0
+requests
