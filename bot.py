@@ -40,8 +40,8 @@ active_position = None  # 'long' / 'short' / None
 entry_price = 0.0
 oco_set = False
 
-STOP_LOSS_PERCENT = 0.005  # 0.5%
-TAKE_PROFIT_PERCENT = 0.01  # 1%
+STOP_LOSS_PERCENT = 0.003  # 0.3%
+TAKE_PROFIT_PERCENT = 0.05  # 0.5%
 
 
 # === Функция загрузки исторических данных (Testnet Futures) ===
@@ -86,6 +86,7 @@ def place_order(symbol, side, quantity):
     global active_position, entry_price, oco_set
 
     try:
+        latest_price = df_stream.iloc[-1]['Close']
         if side == 'buy':
             order = client.futures_create_order(
                 symbol=symbol,
@@ -93,9 +94,13 @@ def place_order(symbol, side, quantity):
                 type='MARKET',
                 quantity=quantity
             )
-            price = float(order['avgPrice'])
-            take_profit = price * (1 + TAKE_PROFIT_PERCENT)
-            stop_loss = price * (1 - STOP_LOSS_PERCENT)
+            take_profit = round(latest_price * (1 + TAKE_PROFIT_PERCENT), 2)
+            stop_loss = round(latest_price * (1 - STOP_LOSS_PERCENT), 2)
+
+            if take_profit <= 0 or stop_loss <= 0:
+                print("⚠️ Неверные значения TP/SL — меньше или равно нулю")
+                send_telegram_message("⚠️ [ОРДЕР] TP/SL не могут быть ≤ 0")
+                return None
 
             # Take Profit
             client.futures_create_order(
@@ -115,11 +120,11 @@ def place_order(symbol, side, quantity):
                 closePosition=True
             )
 
-            message = f"📈 [BUY] Куплено {quantity} {symbol}\nЦена: {price:.2f}$\nTP: {take_profit:.2f}$\nSL: {stop_loss:.2f}$"
+            message = f"📈 [BUY] Куплено {quantity} {symbol}\nЦена: {latest_price:.2f}$\nTP: {take_profit:.2f}$\nSL: {stop_loss:.2f}$"
             send_telegram_message(message)
 
             active_position = 'long'
-            entry_price = price
+            entry_price = latest_price
             oco_set = True
 
         elif side == 'sell' and active_position is None:
@@ -130,9 +135,9 @@ def place_order(symbol, side, quantity):
                 type='MARKET',
                 quantity=quantity
             )
-            price = float(order['avgPrice'])
-            take_profit = price * (1 - TAKE_PROFIT_PERCENT)
-            stop_loss = price * (1 + STOP_LOSS_PERCENT)
+
+            take_profit = round(latest_price * (1 - TAKE_PROFIT_PERCENT), 2)
+            stop_loss = round(latest_price * (1 + STOP_LOSS_PERCENT), 2)
 
             # Take Profit
             client.futures_create_order(
@@ -152,11 +157,11 @@ def place_order(symbol, side, quantity):
                 closePosition=True
             )
 
-            message = f"📉 [SHORT] Продано {quantity} {symbol}\nЦена: {price:.2f}$\nTP: {take_profit:.2f}$\nSL: {stop_loss:.2f}$"
+            message = f"📉 [SHORT] Продано {quantity} {symbol}\nЦена: {latest_price:.2f}$\nTP: {take_profit:.2f}$\nSL: {stop_loss:.2f}$"
             send_telegram_message(message)
 
             active_position = 'short'
-            entry_price = price
+            entry_price = latest_price
             oco_set = True
 
         elif side == 'sell' and active_position == 'long':
@@ -167,8 +172,8 @@ def place_order(symbol, side, quantity):
                 type='MARKET',
                 quantity=quantity
             )
-            price = float(order['avgPrice'])
-            message = f"📉 Продано {quantity} {symbol} по {price:.2f}"
+
+            message = f"📉 Продано {quantity} {symbol} по {latest_price:.2f}"
             send_telegram_message(message)
 
             active_position = None
@@ -182,8 +187,8 @@ def place_order(symbol, side, quantity):
                 type='MARKET',
                 quantity=quantity
             )
-            price = float(order['avgPrice'])
-            message = f"📈 [COVER] Куплено {quantity} {symbol} для закрытия шорта\nЦена: {price:.2f}"
+
+            message = f"📈 [COVER] Куплено {quantity} {symbol} для закрытия шорта\nЦена: {latest_price:.2f}"
             send_telegram_message(message)
 
             active_position = None
@@ -276,7 +281,10 @@ def process_message(msg):
         df_combined = pd.concat([df_stream, df_new])
         df_combined.sort_index(inplace=True)
         df_combined = df_combined[~df_combined.index.duplicated()]
+        # Удаляем 200 самых старых свечей каждые 1000
         df_stream = df_combined.copy()
+        if len(df_stream) > 1000:
+            df_stream = df_stream.iloc[200:]  # Оставляем последние 800 свечей
 
         print(f"📊 Текущее количество свечей: {len(df_stream)}")
 
@@ -288,7 +296,7 @@ def process_message(msg):
             if current_return <= -(STOP_LOSS_PERCENT + 0.001):
                 print("🛑 [Резерв] STOP LOSS достигнут (LONG)")
                 place_order(SYMBOL, 'sell', TRADE_QUANTITY)
-            elif current_return >= TAKE_PROFIT_PERCENT + 0.01:
+            elif current_return >= TAKE_PROFIT_PERCENT + 0.005:
                 print("🎯 [Резерв] TAKE PROFIT достигнут (LONG)")
                 place_order(SYMBOL, 'sell', TRADE_QUANTITY)
 
@@ -297,7 +305,7 @@ def process_message(msg):
             if current_return <= -(STOP_LOSS_PERCENT + 0.001):
                 print("🛑 [Резерв] STOP LOSS достигнут (SHORT)")
                 place_order(SYMBOL, 'buy', TRADE_QUANTITY)
-            elif current_return >= TAKE_PROFIT_PERCENT + 0.01:
+            elif current_return >= TAKE_PROFIT_PERCENT + 0.005:
                 print("🎯 [Резерв] TAKE PROFIT достигнут (SHORT)")
                 place_order(SYMBOL, 'buy', TRADE_QUANTITY)
 
