@@ -5,9 +5,8 @@ import pandas as pd
 from dotenv import load_dotenv
 from binance.client import Client as BinanceClient
 from binance.exceptions import BinanceAPIException
-from telegram.ext import Updater, CommandHandler
 from telegram import Update
-from telegram.ext import CallbackContext
+from telegram.ext import Application, CommandHandler, ContextTypes
 from io import BytesIO
 import mplfinance as mpf
 import threading
@@ -355,41 +354,38 @@ def process_message(msg):
 
 
 # === Команды Telegram ===
-def get_positions(update: Update, context: CallbackContext):
+async def get_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         positions = client.futures_position_information(symbol=SYMBOL)
         for pos in positions:
             if float(pos['positionAmt']) != 0:
-                update.message.reply_text(
+                await update.message.reply_text(
                     f"📊 Позиция: {pos['positionSide']} | Размер: {pos['positionAmt']} | Цена входа: {pos['entryPrice']}"
                 )
     except BinanceAPIException as e:
-        update.message.reply_text(f"❌ Ошибка получения позиций: {e}")
+        await update.message.reply_text(f"❌ Ошибка получения позиций: {e}")
 
-
-def get_orders(update: Update, context: CallbackContext):
+async def get_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         orders = client.futures_get_all_orders(symbol=SYMBOL, limit=50)
         if orders:
             for order in orders:
-                update.message.reply_text(
+                await update.message.reply_text(
                     f"🧾 ID: {order['orderId']} | Сторона: {order['side']} | Цена: {order['price']} | Статус: {order['status']}"
                 )
         else:
-            update.message.reply_text("✅ Нет активных ордеров")
+            await update.message.reply_text("✅ Нет активных ордеров")
     except BinanceAPIException as e:
-        update.message.reply_text(f"❌ Ошибка получения ордеров: {e}")
+        await update.message.reply_text(f"❌ Ошибка получения ордеров: {e}")
 
-
-def check_balance(update: Update, context: CallbackContext):
+async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         balance = client.futures_account_balance()
         for item in balance:
             if item['asset'] == 'USDT':
-                update.message.reply_text(f"💼 Баланс USDT: {item['balance']} USDT")
+                await update.message.reply_text(f"💼 Баланс USDT: {item['balance']} USDT")
     except BinanceAPIException as e:
-        update.message.reply_text(f"❌ Ошибка получения баланса: {e}")
-
+        await update.message.reply_text(f"❌ Ошибка получения баланса: {e}")
 
 def generate_grid_chart(df, grid_levels=None):
     """
@@ -421,31 +417,24 @@ def generate_grid_chart(df, grid_levels=None):
     buffer.seek(0)
     return buffer
 
-
-def send_grid_chart(update: Update, context: CallbackContext):
+async def send_grid_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     grid_levels = execute_grid_strategy(df_stream, None, None, SYMBOL, dry_run=True)
     chart_buffer = generate_grid_chart(df_stream, grid_levels)
 
     if chart_buffer:
-        context.bot.send_photo(chat_id=update.effective_chat.id, photo=chart_buffer)
+        await context.bot.send_photo(chat_id=update.effective_chat.id, photo=chart_buffer)
     else:
-        update.message.reply_text("❌ Не удалось сгенерировать график")
-
+        await update.message.reply_text("❌ Не удалось сгенерировать график")
 
 # === Запуск Telegram бота в отдельном потоке ===
 def run_telegram_bot():
-    updater = Updater(token=TELEGRAM_BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
-
-    dp.add_handler(CommandHandler("positions", get_positions))
-    dp.add_handler(CommandHandler("orders", get_orders))
-    dp.add_handler(CommandHandler("gridchart", send_grid_chart))
-    dp.add_handler(CommandHandler("balance", check_balance))
-
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(CommandHandler("positions", get_positions))
+    app.add_handler(CommandHandler("orders", get_orders))
+    app.add_handler(CommandHandler("gridchart", send_grid_chart))
+    app.add_handler(CommandHandler("balance", check_balance))
     print("📡 Telegram бот запущен")
-    updater.start_polling()
-    updater.idle()
-
+    app.run_polling()
 
 # === Запуск бота ===
 if __name__ == "__main__":
