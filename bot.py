@@ -1,6 +1,6 @@
 import os
-import json
 import time
+import json
 import asyncio
 import pandas as pd
 from dotenv import load_dotenv
@@ -33,22 +33,7 @@ client = BinanceClient(
 # Импорты после инициализации
 from websocket_handler import BinanceFuturesWebSocketManager
 from strategy import execute_strategy, execute_grid_strategy
-
-
-def create_notifier(bot_token, chat_id):
-    from telegram import Bot
-    import asyncio
-
-    bot = Bot(token=bot_token)
-
-    async def send_message(msg):
-        try:
-            await bot.send_message(chat_id=chat_id, text=msg)
-        except Exception as e:
-            print(f"[Telegram] Ошибка отправки сообщения: {e}")
-
-    return lambda msg: asyncio.run(send_message(msg))
-
+from notifier import create_notifier
 
 send_telegram_message = create_notifier(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
 
@@ -64,13 +49,11 @@ last_position_close_time = 0
 STOP_LOSS_PERCENT = 0.003  # 0.3%
 TAKE_PROFIT_PERCENT = 0.005  # 0.5%
 
-
 # === Функция загрузки исторических данных (Testnet Futures) ===
 def load_historical_data(symbol="BTCUSDT", interval="1m", hours=24):
     print(f"⏳ Загрузка исторических данных за {hours} часов...")
     end_time = pd.Timestamp.now(tz='UTC')
     start_time = end_time - pd.Timedelta(hours=hours)
-
     start_ts = int(start_time.timestamp() * 1000)
     end_ts = int(end_time.timestamp() * 1000)
 
@@ -278,9 +261,8 @@ async def process_message(msg):
         }], index=[candle_time])
         df_combined = pd.concat([df_stream, df_new]).drop_duplicates()
         df_combined.sort_index(inplace=True)
-        df_combined = df_combined.tail(1000)
-        df_stream = df_combined.copy()
-
+        df_combined = df_combined[~df_combined.index.duplicated()]
+        df_stream = df_combined.tail(1000)
         print(f"📊 Текущее количество свечей: {len(df_stream)}")
 
         # Вызываем стратегии
@@ -407,16 +389,18 @@ async def run_telegram_bot():
 
 
 # === Запуск бота ===
+async def main():
+    bot_task = run_telegram_bot()
+    ws_task = run_websocket()
+    await asyncio.gather(bot_task, ws_task)
+
+
 if __name__ == "__main__":
     print("🤖 Бот запущен...")
-
-    # === Проверка API ключей ===
     if not BINANCE_FUTURES_API_KEY or not BINANCE_FUTURES_SECRET_KEY:
         print("❌ Не заданы API ключи")
         send_telegram_message("❌ Не заданы API ключи для Binance")
         exit(1)
-
-    # Проверка подключения к Testnet Futures
     try:
         balance = client.futures_account_balance()
         print("✅ Успешно подключено к тестовой сети")
@@ -425,19 +409,10 @@ if __name__ == "__main__":
         print("❌ Ошибка авторизации:", e)
         exit(1)
 
-    # Загрузка исторических данных до запуска WebSocket
     historical_df = load_historical_data(SYMBOL, INTERVAL, hours=24)
     if not historical_df.empty:
         df_stream = pd.concat([df_stream, historical_df]).drop_duplicates()
         df_stream.sort_index(inplace=True)
         print(f"📊 Исторические данные добавлены | Текущее количество свечей: {len(df_stream)}")
 
-    # Создаем задачи
-    bot_task = asyncio.create_task(run_telegram_bot())
-    ws_task = asyncio.create_task(run_websocket())
-
-    # Запускаем обе задачи параллельно
-    try:
-        asyncio.run(asyncio.gather(bot_task, ws_task))
-    except KeyboardInterrupt:
-        print("🛑 Бот остановлен вручную")
+    asyncio.run(main())
