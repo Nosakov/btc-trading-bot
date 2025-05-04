@@ -10,6 +10,10 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from io import BytesIO
 import mplfinance as mpf
+import nest_asyncio
+
+
+nest_asyncio.apply()
 
 # === Настройки проекта ===
 load_dotenv()
@@ -414,5 +418,7 @@ if __name__ == "__main__":
         df_stream = pd.concat([df_stream, historical_df]).drop_duplicates()
         df_stream.sort_index(inplace=True)
         print(f"📊 Исторические данные добавлены | Текущее количество свечей: {len(df_stream)}")
+    else:
+        print("⚠️ Исторические данные пустые — пропускаем конкатенацию")
 
     asyncio.run(main())
