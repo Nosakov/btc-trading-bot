@@ -36,14 +36,14 @@ class BinanceFuturesWebSocketManager:
         except json.JSONDecodeError as ve:
             logger.error("❌ Ошибка парсинга JSON: %s", ve)
         except Exception as e:
-            logger.error("❌ Ошибка в обработчике сообщения: %s", e)
+            logger.error("❌ Ошибка в обработчике: %s", e)
 
     def _on_error(self, ws, error):
         logger.error("❌ Ошибка WebSocket: %s", error)
 
-    def _on_close(self, ws, close_status_code, close_msg):
+    def _on_close(self, ws, code, reason):
         logger.info("🛑 Соединение закрыто")
-        logger.info(f"📝 Код: {close_status_code}, Сообщение: {close_msg}")
+        logger.info(f"📝 Код: {code}, Причина: {reason}")
 
     def stop(self):
         if self.ws:
