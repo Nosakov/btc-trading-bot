@@ -3,17 +3,21 @@ import numpy as np
 
 TRADE_QUANTITY = 0.002
 
-def calculate_indicators(df):
-    if len(df) < 26:
-        print("⚠️ Недостаточно данных для анализа")
-        return df
+
+def calculate_indicators(df, window=14):
+    """
+    Расчёт индикаторов: RSI, MACD, Signal
+    """
+    df = df.copy()
 
     # RSI
-    delta = df['Close'].diff(1)
+    delta = df['Close'].diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.rolling(window=14).mean()
-    avg_loss = loss.rolling(window=14).mean()
+
+    avg_gain = gain.rolling(window=window).mean()
+    avg_loss = loss.rolling(window=window).mean()
+
     rs = avg_gain / avg_loss
     df['rsi'] = 100 - (100 / (1 + rs))
 
@@ -28,28 +32,31 @@ def calculate_indicators(df):
 
 
 def execute_strategy(df, send_telegram_message, place_order_func, symbol="BTCUSDT"):
+    """
+    Стратегия на основе RSI и MACD
+    """
     df = calculate_indicators(df)
+
+    if len(df) < 26:
+        print("⏳ Недостаточно данных для анализа")
+        return
 
     latest = df.iloc[-1]
     prev = df.iloc[-2]
 
-    if pd.isna(latest['rsi']) or pd.isna(latest['macd_line']):
-        print("⚠️ Индикаторы ещё не готовы")
-        return
-
     print(f"📉 RSI: {latest['rsi']:.2f}")
     print(f"📉 MACD: {latest['macd_line']:.2f} | Signal: {latest['signal_line']:.2f}")
 
-    # Покупка
-    if prev['macd_line'] < prev['signal_line'] and latest['macd_line'] > latest['signal_line'] and \
-            latest['rsi'] < 30:
+    # Покупка по сигналу RSI+MACD
+    if latest['rsi'] < 30 and latest['macd_line'] > latest['signal_line'] and prev['macd_line'] <= \
+            prev['signal_line']:
         message = f"🟢 [RSI+MACD] Покупка {symbol}\nЦена: {latest['Close']:.2f}$\nRSI: {latest['rsi']:.2f}"
         send_telegram_message(message)
         place_order_func(symbol, 'buy', TRADE_QUANTITY)
 
-    # Продажа
-    elif prev['macd_line'] > prev['signal_line'] and latest['macd_line'] < latest['signal_line'] and \
-            latest['rsi'] > 70:
+    # Продажа по сигналу RSI+MACD
+    elif latest['rsi'] > 70 and latest['macd_line'] < latest['signal_line'] and prev['macd_line'] >= \
+            prev['signal_line']:
         message = f"🔴 [RSI+MACD] Продажа {symbol}\nЦена: {latest['Close']:.2f}$\nRSI: {latest['rsi']:.2f}"
         send_telegram_message(message)
         place_order_func(symbol, 'sell', TRADE_QUANTITY)
@@ -87,21 +94,23 @@ def detect_grid_signal(df, grid_info, send_telegram_message, place_order_func, s
                 place_order_func(symbol, 'buy', TRADE_QUANTITY)
             else:
                 message = f"🔴 [GRID] Цена выше уровня {level} | SELL"
-                place_order_func(symbol, 'sell', TRADE_QUANTITY)
 
             send_telegram_message(message)
 
 
 def execute_grid_strategy(df, send_telegram_message, place_order_func, symbol="BTCUSDT",
-                          grid_size=50, num_levels=5):
+                          dry_run=False):
     """
     Основная функция сеточной стратегии
     """
-    if len(df) < grid_size:
-        print(f"⏳ Нужно больше данных для сетки ({len(df)} / {grid_size})")
+    if len(df) < 50:
+        print("⏳ Нужно больше данных для сетки")
         return
 
-    grid_info = calculate_grid_levels(df, grid_size=grid_size, num_levels=num_levels)
+    grid_info = calculate_grid_levels(df, grid_size=50, num_levels=5)
     print(f"📊 Уровни сетки: {grid_info['levels']}")
 
-    detect_grid_signal(df, grid_info, send_telegram_message, place_order_func, symbol=symbol)
+    if not dry_run:
+        detect_grid_signal(df, grid_info, send_telegram_message, place_order_func, symbol=symbol)
+
+    return grid_info['levels']

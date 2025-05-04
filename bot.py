@@ -5,6 +5,12 @@ import pandas as pd
 from dotenv import load_dotenv
 from binance.client import Client as BinanceClient
 from binance.exceptions import BinanceAPIException
+from telegram.ext import Updater, CommandHandler
+from telegram import Update
+from telegram.ext import CallbackContext
+from io import BytesIO
+import mplfinance as mpf
+import threading
 
 # === Настройки проекта ===
 load_dotenv()
@@ -43,7 +49,7 @@ position_closed_recently = False
 last_position_close_time = 0
 
 STOP_LOSS_PERCENT = 0.003  # 0.3%
-TAKE_PROFIT_PERCENT = 0.05  # 0.5%
+TAKE_PROFIT_PERCENT = 0.005  # 0.5%
 
 
 # === Функция загрузки исторических данных (Testnet Futures) ===
@@ -181,7 +187,7 @@ def place_order(symbol, side, quantity):
             position_closed_recently = False
 
         elif side == 'sell' and active_position == 'long':
-            # Закрытие лонговой позиции
+            # Простая продажа без OCO
             order = client.futures_create_order(
                 symbol=symbol,
                 side='SELL',
@@ -238,6 +244,8 @@ def monitor_active_orders(symbol="BTCUSDT"):
 
         if open_orders:
             print(f"📊 Найдено {len(open_orders)} активных ордеров")
+            for order in open_orders:
+                print(f"🧾 ID: {order['orderId']} | Цена: {order['price']}")
             oco_set = True
         else:
             print("✅ Нет активных ордеров")
@@ -290,7 +298,7 @@ def process_message(msg):
             print("🔁 Эта свеча уже есть — пропускаем")
             return
 
-        # Добавляем в DataFrame
+        # Добавляем новую свечу
         df_new = pd.DataFrame([{
             'Open': open_price,
             'High': high,
@@ -346,6 +354,99 @@ def process_message(msg):
         print(f"❌ Ошибка обработки сообщения: {e}")
 
 
+# === Команды Telegram ===
+def get_positions(update: Update, context: CallbackContext):
+    try:
+        positions = client.futures_position_information(symbol=SYMBOL)
+        for pos in positions:
+            if float(pos['positionAmt']) != 0:
+                update.message.reply_text(
+                    f"📊 Позиция: {pos['positionSide']} | Размер: {pos['positionAmt']} | Цена входа: {pos['entryPrice']}"
+                )
+    except BinanceAPIException as e:
+        update.message.reply_text(f"❌ Ошибка получения позиций: {e}")
+
+
+def get_orders(update: Update, context: CallbackContext):
+    try:
+        orders = client.futures_get_all_orders(symbol=SYMBOL, limit=50)
+        if orders:
+            for order in orders:
+                update.message.reply_text(
+                    f"🧾 ID: {order['orderId']} | Сторона: {order['side']} | Цена: {order['price']} | Статус: {order['status']}"
+                )
+        else:
+            update.message.reply_text("✅ Нет активных ордеров")
+    except BinanceAPIException as e:
+        update.message.reply_text(f"❌ Ошибка получения ордеров: {e}")
+
+
+def check_balance(update: Update, context: CallbackContext):
+    try:
+        balance = client.futures_account_balance()
+        for item in balance:
+            if item['asset'] == 'USDT':
+                update.message.reply_text(f"💼 Баланс USDT: {item['balance']} USDT")
+    except BinanceAPIException as e:
+        update.message.reply_text(f"❌ Ошибка получения баланса: {e}")
+
+
+def generate_grid_chart(df, grid_levels=None):
+    """
+    Генерирует график свечей с уровнями сетки
+    """
+    if len(df) < 50:
+        return None
+
+    df = df.tail(50).copy()
+    buffer = BytesIO()
+
+    alines = []
+    if grid_levels:
+        for level in grid_levels:
+            alines.append(dict(y1=level, color='gray', linestyle='--'))
+
+    mpf.plot(
+        df,
+        type='candle',
+        style='yahoo',
+        title=f"{SYMBOL} - Последние 50 свечей",
+        alines=dict(alines=alines),
+        volume=False,
+        savefig=dict(fname=buffer, dpi=100, bbox_inches='tight'),
+        figratio=(10, 6),
+        figscale=1.5
+    )
+
+    buffer.seek(0)
+    return buffer
+
+
+def send_grid_chart(update: Update, context: CallbackContext):
+    grid_levels = execute_grid_strategy(df_stream, None, None, SYMBOL, dry_run=True)
+    chart_buffer = generate_grid_chart(df_stream, grid_levels)
+
+    if chart_buffer:
+        context.bot.send_photo(chat_id=update.effective_chat.id, photo=chart_buffer)
+    else:
+        update.message.reply_text("❌ Не удалось сгенерировать график")
+
+
+# === Запуск Telegram бота в отдельном потоке ===
+def run_telegram_bot():
+    updater = Updater(token=TELEGRAM_BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
+
+    dp.add_handler(CommandHandler("positions", get_positions))
+    dp.add_handler(CommandHandler("orders", get_orders))
+    dp.add_handler(CommandHandler("gridchart", send_grid_chart))
+    dp.add_handler(CommandHandler("balance", check_balance))
+
+    print("📡 Telegram бот запущен")
+    updater.start_polling()
+    updater.idle()
+
+
 # === Запуск бота ===
 if __name__ == "__main__":
     print("🤖 Бот запущен...")
@@ -371,6 +472,10 @@ if __name__ == "__main__":
         df_stream = pd.concat([df_stream, historical_df]).drop_duplicates()
         df_stream.sort_index(inplace=True)
         print(f"📊 Исторические данные добавлены | Текущее количество свечей: {len(df_stream)}")
+
+    # Запуск Telegram бота в отдельном потоке
+    telegram_thread = threading.Thread(target=run_telegram_bot)
+    telegram_thread.start()
 
     # Запуск WebSocket
     ws_manager = BinanceFuturesWebSocketManager(SYMBOL, INTERVAL, process_message)
