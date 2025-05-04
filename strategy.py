@@ -46,13 +46,13 @@ async def execute_strategy(df, send_telegram_message, place_order_func, symbol="
     if latest['rsi'] < 30 and latest['macd_line'] > latest['signal_line'] and prev['macd_line'] <= prev['signal_line']:
         message = f"🟢 [RSI+MACD] Покупка {symbol}\nЦена: {latest['Close']:.2f}$\nRSI: {latest['rsi']:.2f}"
         send_telegram_message(message)
-        await asyncio.to_thread(place_order_func, symbol, 'buy', TRADE_QUANTITY)
+        place_order_func(symbol, 'buy', TRADE_QUANTITY)
 
     # Продажа по сигналу RSI+MACD
     elif latest['rsi'] > 70 and latest['macd_line'] < latest['signal_line'] and prev['macd_line'] >= prev['signal_line']:
         message = f"🔴 [RSI+MACD] Продажа {symbol}\nЦена: {latest['Close']:.2f}$\nRSI: {latest['rsi']:.2f}"
         send_telegram_message(message)
-        await asyncio.to_thread(place_order_func, symbol, 'sell', TRADE_QUANTITY)
+        place_order_func(symbol, 'sell', TRADE_QUANTITY)
 
 
 async def execute_grid_strategy(df, send_telegram_message, place_order_func, symbol="BTCUSDT", dry_run=False):
@@ -82,15 +82,15 @@ def calculate_grid_levels(df, grid_size=50, num_levels=5):
 async def detect_grid_signal(df, grid_info, send_telegram_message, place_order_func, symbol="BTCUSDT"):
     latest_price = df['Close'].iloc[-1]
     levels = grid_info['levels']
-    threshold = latest_price * 0.001  # 0.1%
+    threshold = latest_price * 0.01  # 1%
 
     for level in levels:
         if abs(latest_price - level) < threshold:
             if latest_price < level:
                 message = f"🟢 [GRID] Цена ниже уровня {level} | BUY"
-                send_telegram_message(message)
-                await asyncio.to_thread(place_order_func, symbol, 'buy', TRADE_QUANTITY)
+                place_order_func(symbol, 'buy', TRADE_QUANTITY)
             else:
                 message = f"🔴 [GRID] Цена выше уровня {level} | SELL"
-                send_telegram_message(message)
-                await asyncio.to_thread(place_order_func, symbol, 'sell', TRADE_QUANTITY)
+                place_order_func(symbol, 'sell', TRADE_QUANTITY)
+            send_telegram_message(message)
+            break

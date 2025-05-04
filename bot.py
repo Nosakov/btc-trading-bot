@@ -60,7 +60,6 @@ def load_historical_data(symbol="BTCUSDT", interval="1m", hours=24):
     start_time = end_time - pd.Timedelta(hours=hours)
     start_ts = int(start_time.timestamp() * 1000)
     end_ts = int(end_time.timestamp() * 1000)
-
     try:
         klines = client.get_klines(symbol=symbol, interval=interval, startTime=start_ts, endTime=end_ts)
         if not klines:
@@ -234,7 +233,6 @@ async def process_message(msg):
             return
 
         kline = msg.get('k', {})
-        symbol = kline.get('s')
         timestamp = int(kline.get('t'))
         open_price = float(kline.get('o'))
         high = float(kline.get('h'))
@@ -243,7 +241,7 @@ async def process_message(msg):
         volume = float(kline.get('v'))
         is_closed = kline.get('x')
 
-        print(f"🕯️ Свеча: {symbol} | Закрыта: {is_closed} | Цена: {close_price:.2f}")
+        print(f"🕯️ Свеча: {SYMBOL} | Закрыта: {is_closed} | Цена: {close_price:.2f}")
 
         # Только если свеча закрыта
         if not is_closed:
@@ -265,8 +263,8 @@ async def process_message(msg):
         }], index=[candle_time])
         df_combined = pd.concat([df_stream, df_new]).drop_duplicates()
         df_combined.sort_index(inplace=True)
-        df_combined = df_combined[~df_combined.index.duplicated()]
-        df_stream = df_combined.tail(1000)
+        df_stream = df_combined.tail(1000).copy()
+
         print(f"📊 Текущее количество свечей: {len(df_stream)}")
 
         # Вызываем стратегии
@@ -338,13 +336,19 @@ async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка получения баланса: {e}")
 
 
+async def send_grid_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    grid_levels = await execute_grid_strategy(df_stream, None, None, SYMBOL, dry_run=True)
+    chart_buffer = generate_grid_chart(df_stream, grid_levels)
+    if chart_buffer:
+        await context.bot.send_photo(chat_id=update.effective_chat.id, photo=chart_buffer)
+    else:
+        await update.message.reply_text("❌ Не удалось сгенерировать график")
+
+
+# === Генерация графика сетки ===
 def generate_grid_chart(df, grid_levels=None):
-    """
-    Генерирует график свечей с уровнями сетки
-    """
     if len(df) < 50:
         return None
-
     df = df.tail(50).copy()
     buffer = BytesIO()
     apdict = []
@@ -364,15 +368,6 @@ def generate_grid_chart(df, grid_levels=None):
     )
     buffer.seek(0)
     return buffer
-
-
-async def send_grid_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    grid_levels = execute_grid_strategy(df_stream, None, None, SYMBOL, dry_run=True)
-    chart_buffer = generate_grid_chart(df_stream, grid_levels)
-    if chart_buffer:
-        await context.bot.send_photo(chat_id=update.effective_chat.id, photo=chart_buffer)
-    else:
-        await update.message.reply_text("❌ Не удалось сгенерировать график")
 
 
 # === Асинхронный запуск WebSocket ===
@@ -401,10 +396,14 @@ async def main():
 
 if __name__ == "__main__":
     print("🤖 Бот запущен...")
+
+    # === Проверка API ключей ===
     if not BINANCE_FUTURES_API_KEY or not BINANCE_FUTURES_SECRET_KEY:
         print("❌ Не заданы API ключи")
         send_telegram_message("❌ Не заданы API ключи для Binance")
         exit(1)
+
+    # Проверка подключения к Testnet Futures
     try:
         balance = client.futures_account_balance()
         print("✅ Успешно подключено к тестовой сети")
@@ -413,6 +412,7 @@ if __name__ == "__main__":
         print("❌ Ошибка авторизации:", e)
         exit(1)
 
+    # Загрузка исторических данных до запуска WebSocket
     historical_df = load_historical_data(SYMBOL, INTERVAL, hours=24)
     if not historical_df.empty:
         df_stream = pd.concat([df_stream, historical_df]).drop_duplicates()
