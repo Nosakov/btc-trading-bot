@@ -18,7 +18,7 @@ nest_asyncio.apply()
 # === Настройки проекта ===
 load_dotenv()
 SYMBOL = "BTCUSDT"
-INTERVAL = "1m"
+INTERVAL = "3m"
 TRADE_QUANTITY = 0.002  # Количество BTC для торговли
 
 # === Инициализация API клиента (Testnet Futures) ===
@@ -96,6 +96,9 @@ def place_order(symbol, side, quantity):
             print("⏳ Ждём перед новой сделкой...")
             return None
 
+        # Сначала отменяем все старые ордера
+        cancel_all_orders(symbol)
+
         if side == 'buy':
             order = client.futures_create_order(
                 symbol=symbol,
@@ -118,6 +121,7 @@ def place_order(symbol, side, quantity):
                 stopPrice=round(take_profit, 2),
                 closePosition=True
             )
+
             # Stop Loss
             client.futures_create_order(
                 symbol=symbol,
@@ -126,12 +130,14 @@ def place_order(symbol, side, quantity):
                 stopPrice=round(stop_loss, 2),
                 closePosition=True
             )
+
             message = f"📈 [BUY] Куплено {quantity} {symbol}\nЦена: {latest_price:.2f}$\nTP: {take_profit:.2f}$\nSL: {stop_loss:.2f}$"
             send_telegram_message(message)
             active_position = 'long'
             entry_price = latest_price
             oco_set = True
             position_closed_recently = False
+
         elif side == 'sell' and active_position is None:
             # Продажа шортовой позиции
             order = client.futures_create_order(
@@ -155,6 +161,7 @@ def place_order(symbol, side, quantity):
                 stopPrice=round(take_profit, 2),
                 closePosition=True
             )
+
             # Stop Loss
             client.futures_create_order(
                 symbol=symbol,
@@ -163,12 +170,14 @@ def place_order(symbol, side, quantity):
                 stopPrice=round(stop_loss, 2),
                 closePosition=True
             )
+
             message = f"📉 [SHORT] Продано {quantity} {symbol}\nЦена: {latest_price:.2f}$\nTP: {take_profit:.2f}$\nSL: {stop_loss:.2f}$"
             send_telegram_message(message)
             active_position = 'short'
             entry_price = latest_price
             oco_set = True
             position_closed_recently = False
+
         elif side == 'sell' and active_position == 'long':
             # Простая продажа без OCO
             order = client.futures_create_order(
@@ -184,6 +193,10 @@ def place_order(symbol, side, quantity):
             oco_set = False
             position_closed_recently = True
             last_position_close_time = time.time()
+
+            # Отменяем оставшиеся ордера
+            cancel_all_orders(symbol)
+
         elif side == 'buy' and active_position == 'short':
             # Закрытие шортовой позиции
             order = client.futures_create_order(
@@ -199,6 +212,10 @@ def place_order(symbol, side, quantity):
             oco_set = False
             position_closed_recently = True
             last_position_close_time = time.time()
+
+            # Отменяем оставшиеся ордера
+            cancel_all_orders(symbol)
+
         else:
             print("❌ Неизвестная сторона ордера или состояние")
             return None
@@ -210,6 +227,37 @@ def place_order(symbol, side, quantity):
         send_telegram_message(f"❌ [ОРДЕР] Ошибка: {e}")
         oco_set = False
     return None
+
+
+# === Отмена всех ордеров типа SL/TP ===
+def cancel_all_orders(symbol="BTCUSDT"):
+    try:
+        open_orders = client.futures_get_all_orders(symbol=symbol, limit=50)
+        stop_orders = [
+            o for o in open_orders
+            if o['status'] == 'NEW' and o['type'] in ['TAKE_PROFIT_MARKET', 'STOP_MARKET']
+        ]
+        if stop_orders:
+            print(f"🛑 Отменяем {len(stop_orders)} ордеров")
+            for order in stop_orders:
+                client.futures_cancel_order(symbol=symbol, orderId=order['orderId'])
+            send_telegram_message(f"❌ [ORDERS] {len(stop_orders)} ордеров отменено")
+        else:
+            print("✅ Нет активных ордеров SL/TP")
+    except BinanceAPIException as e:
+        print("❌ Ошибка при отмене ордеров:", e)
+        send_telegram_message(f"❌ [ORDERS] Не удалось отменить ордера: {e}")
+
+
+# === Проверка наличия активных ордеров ===
+def has_active_orders(symbol="BTCUSDT"):
+    try:
+        orders = client.futures_get_all_orders(symbol=symbol, limit=50)
+        active = [o for o in orders if o['status'] == 'NEW' and o['type'] in ['TAKE_PROFIT_MARKET', 'STOP_MARKET']]
+        return len(active) > 0
+    except BinanceAPIException as e:
+        print("❌ Ошибка проверки ордеров:", e)
+        return False
 
 
 # === Обработка сообщений из WebSocket ===
@@ -266,6 +314,11 @@ async def process_message(msg):
         df_stream = df_combined.tail(1000).copy()
 
         print(f"📊 Текущее количество свечей: {len(df_stream)}")
+
+        # Если есть активные ордера → запрещаем новые сделки
+        if has_active_orders(SYMBOL):
+            print("🚫 Нельзя открывать новую позицию: есть активные ордера")
+            return
 
         # Вызываем стратегии
         if len(df_stream) >= 26:
@@ -336,31 +389,22 @@ async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка получения баланса: {e}")
 
 
-async def send_grid_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    grid_levels = await execute_grid_strategy(df_stream, None, None, SYMBOL, dry_run=True)
-    chart_buffer = generate_grid_chart(df_stream, grid_levels)
-    if chart_buffer:
-        await context.bot.send_photo(chat_id=update.effective_chat.id, photo=chart_buffer)
-    else:
-        await update.message.reply_text("❌ Не удалось сгенерировать график")
-
-
-# === Генерация графика сетки ===
 def generate_grid_chart(df, grid_levels=None):
-    if len(df) < 50:
+    if len(df) < 50 or not grid_levels:
         return None
     df = df.tail(50).copy()
     buffer = BytesIO()
-    apdict = []
-    if grid_levels:
-        for level in grid_levels:
-            apdict.append(dict(y1=level, color='gray', linestyle='--'))
+
+    lines = []
+    for level in grid_levels:
+        lines.append({'y1': float(level), 'y2': float(level), 'color': 'gray', 'linestyle': '--'})
+
     mpf.plot(
         df,
         type='candle',
         style='yahoo',
         title=f"{SYMBOL} - Последние 50 свечей",
-        alines=dict(alines=apdict),
+        alines={'alines': lines},
         volume=False,
         savefig=dict(fname=buffer, dpi=100, bbox_inches='tight'),
         figratio=(10, 6),
@@ -368,6 +412,15 @@ def generate_grid_chart(df, grid_levels=None):
     )
     buffer.seek(0)
     return buffer
+
+
+async def send_grid_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    grid_levels = await execute_grid_strategy(df_stream, None, None, SYMBOL, dry_run=True)
+    chart_buffer = generate_grid_chart(df_stream, list(map(float, grid_levels)))
+    if chart_buffer:
+        await context.bot.send_photo(chat_id=update.effective_chat.id, photo=chart_buffer)
+    else:
+        await update.message.reply_text("❌ Не удалось сгенерировать график")
 
 
 # === Асинхронный запуск WebSocket ===
@@ -388,12 +441,6 @@ async def run_telegram_bot():
 
 
 # === Запуск бота ===
-async def main():
-    bot_task = run_telegram_bot()
-    ws_task = run_websocket()
-    await asyncio.gather(bot_task, ws_task)
-
-
 if __name__ == "__main__":
     print("🤖 Бот запущен...")
 
@@ -419,6 +466,11 @@ if __name__ == "__main__":
         df_stream.sort_index(inplace=True)
         print(f"📊 Исторические данные добавлены | Текущее количество свечей: {len(df_stream)}")
     else:
-        print("⚠️ Исторические данные пустые — пропускаем конкатенацию")
+        print("⚠️ Нет исторических данных")
+
+    async def main():
+        bot_task = run_telegram_bot()
+        ws_task = run_websocket()
+        await asyncio.gather(bot_task, ws_task)
 
     asyncio.run(main())
