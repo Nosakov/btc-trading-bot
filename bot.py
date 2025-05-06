@@ -414,8 +414,8 @@ def generate_grid_chart(df, grid_levels=None):
     # Добавляем конвертацию дат в формат matplotlib
     from matplotlib.dates import date2num
     for line in lines:
-        line['x1'] = date2num(line['x1'])  # ← Преобразуем Timestamp в число
-        line['x2'] = date2num(line['x2'])
+        line['x1'] = float(date2num(line['x1']))  # ← Преобразуем Timestamp в число
+        line['x2'] = float(date2num(line['x2']))
 
     mpf.plot(
         df,
