@@ -397,7 +397,14 @@ def generate_grid_chart(df, grid_levels=None):
 
     lines = []
     for level in grid_levels:
-        lines.append({'y1': float(level), 'y2': float(level), 'color': 'gray', 'linestyle': '--'})
+        lines.append({
+            'y1': float(level),
+            'y2': float(level),
+            'x1': df.index[0],  # Начало диапазона
+            'x2': df.index[-1],  # Конец диапазона
+            'color': 'gray',
+            'linestyle': '--'
+        })
 
     mpf.plot(
         df,
