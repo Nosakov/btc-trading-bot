@@ -69,7 +69,7 @@ def calculate_grid_levels(df, grid_size=50, num_levels=5):
     latest_price = df['Close'].iloc[-1]
     avg_price = df['Close'].rolling(window=grid_size).mean().iloc[-1]
 
-    step = avg_price * 0.001  # шаг 0.1%
+    step = avg_price * 0.01  # шаг 0.1%
     lower_levels = [round(avg_price - step * i, 2) for i in range(num_levels, 0, -1)]
     upper_levels = [round(avg_price + step * i, 2) for i in range(1, num_levels + 1)]
     return {
@@ -82,7 +82,7 @@ def calculate_grid_levels(df, grid_size=50, num_levels=5):
 async def detect_grid_signal(df, grid_info, send_telegram_message, place_order_func, symbol="BTCUSDT"):
     latest_price = df['Close'].iloc[-1]
     levels = grid_info['levels']
-    threshold = latest_price * 0.01  # 1%
+    threshold = latest_price * 0.001  # 1%
 
     for level in levels:
         if abs(latest_price - level) < threshold:

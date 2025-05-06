@@ -422,7 +422,7 @@ def generate_grid_chart(df, grid_levels=None):
         type='candle',
         style='yahoo',
         title=f"{SYMBOL} - Последние 50 свечей",
-        alines={'alines': lines},
+        alines=lines,
         volume=False,
         savefig=dict(fname=buffer, dpi=100, bbox_inches='tight'),
         figratio=(10, 6),
