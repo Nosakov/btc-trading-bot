@@ -392,19 +392,30 @@ async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def generate_grid_chart(df, grid_levels=None):
     if len(df) < 50 or not grid_levels:
         return None
+
     df = df.tail(50).copy()
     buffer = BytesIO()
 
+    # Конвертируем уровни в горизонтальные линии
     lines = []
+    x_start = df.index[0]   # Первый временной индекс
+    x_end = df.index[-1]    # Последний временной индекс
+
     for level in grid_levels:
         lines.append({
             'y1': float(level),
             'y2': float(level),
-            'x1': df.index[0],  # Начало диапазона
-            'x2': df.index[-1],  # Конец диапазона
+            'x1': x_start,
+            'x2': x_end,
             'color': 'gray',
             'linestyle': '--'
         })
+
+    # Добавляем конвертацию дат в формат matplotlib
+    from matplotlib.dates import date2num
+    for line in lines:
+        line['x1'] = date2num(line['x1'])  # ← Преобразуем Timestamp в число
+        line['x2'] = date2num(line['x2'])
 
     mpf.plot(
         df,
